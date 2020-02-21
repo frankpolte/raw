@@ -1,145 +1,197 @@
-(function(){
+(function() {
 
-    var stream = raw.model();
+	var stream = raw.models.timeSeries();
 
-    var group = stream.dimension()
-        .title('Group')
-        .required(1)
+	var chart = raw.chart()
+		.title('Area graph')
+		.thumbnail("imgs/smallMultiples.png")
+		.description("A small multiple is a series of small similar graphics or charts, allowing them to be easily compared.<br/>Based on <a href='http://bl.ocks.org/mbostock/9490313'>http://bl.ocks.org/mbostock/9490313</a>")
+		.category('Time series')
+		.model(stream)
 
-    var date = stream.dimension()
-        .title('Date')
-        .types(Date)
-        .accessor(function (d){ return this.type() == "Date" ? new Date(d) : +d; })
-        .required(1)
+	var width = chart.number()
+		.title("Width")
+		.defaultValue(1000)
+		.fitToWidth(true)
 
-    var size = stream.dimension()
-        .title('Size')
-        .types(Number)
-        .required(1)
+	var height = chart.number()
+		.title("Height")
+		.defaultValue(500)
 
-    stream.map(function (data){
-        if (!group()) return [];
+	var padding = chart.number()
+		.title("Padding")
+		.defaultValue(5)
 
-        var dates = d3.set(data.map(function (d){ return +date(d); })).values();
+	var scale = chart.checkbox()
+		.title("Use same scale")
+		.defaultValue(false)
 
-        var groups = d3.nest()
-            .key(group)
-            .rollup(function (g){
-                var singles = d3.nest()
-                    .key(function(d){ return +date(d); })
-                    .rollup(function (d){
-                        return {
-                            group : group(d[0]),
-                            date : date(d[0]),
-                            size : size() ? d3.sum(d,size) : d.length 
-                        }
-                    })
-                    .map(g);
+	var specular = chart.checkbox()
+		.title("Center values vertically")
+		.defaultValue(false)
 
-                return d3.values(singles);
-            })
-            .map(data)
+	var colors = chart.color()
+		.title("Color scale")
 
-        return d3.values(groups).map(function(d){ return d.sort(function(a,b){ return a.date - b.date; }) });
+	var curve = chart.list()
+		.title("Interpolation")
+		.values(['Cardinal', 'Basis spline', 'DensityDesign', 'Linear'])
+		.defaultValue('DensityDesign')
 
-    })
+	var sorting = chart.list()
+		.title("Sort by")
+		.values(['Original', 'Total (descending)', 'Total (ascending)', 'Name'])
+		.defaultValue('Original')
 
-    var chart = raw.chart()
-        .title('Small Multiples (Area)')
-        .thumbnail("imgs/smallMultiples.png")
-        .description("A small multiple is a series of small similar graphics or charts, allowing them to be easily compared.<br/>Based on <a href='http://bl.ocks.org/mbostock/9490313'>http://bl.ocks.org/mbostock/9490313</a>")
-        .category('Time Series')
-        .model(stream)
+	// interpolation function
 
-    var width = chart.number()
-        .title("Width")
-        .defaultValue(1000)
-        .fitToWidth(true)
+	function CurveSankey(context) {
+		this._context = context;
+	}
 
-    var height = chart.number()
-        .title("Height")
-        .defaultValue(500)
+	CurveSankey.prototype = {
+		areaStart: function() {
+			this._line = 0;
+		},
+		areaEnd: function() {
+			this._line = NaN;
+		},
+		lineStart: function() {
+			this._x = this._y = NaN;
+			this._point = 0;
+		},
+		lineEnd: function() {
+			if (this._line || (this._line !== 0 && this._point === 1)) this._context.closePath();
+			this._line = 1 - this._line;
+		},
+		point: function(x, y) {
+			x = +x, y = +y;
+			switch (this._point) {
+				case 0:
+					this._point = 1;
+					this._line ? this._context.lineTo(x, y) : this._context.moveTo(x, y);
+					break;
+				case 1:
+					this._point = 2; // proceed
+				default:
+					var mx = (x - this._x) / 2 + this._x;
+					this._context.bezierCurveTo(mx, this._y, mx, y, x, y);
+					break;
+			}
+			this._x = x, this._y = y;
+		}
+	};
 
-    var padding = chart.number()
-        .title("Padding")
-        .defaultValue(10)
+	var curveSankey = function(context) {
+		return new CurveSankey(context);
+	}
 
-    var scale = chart.checkbox()
-        .title("Use same scale")
-        .defaultValue(false)
+	chart.draw(function(selection, data) {
 
-    var colors = chart.color()
-        .title("Color scale")
+		//sort data
+		function sortBy(a, b) {
+			if (sorting() == 'Total (descending)') {
+				return a.values.reduce(function(c, d) { return c + d.size }, 0) - b.values.reduce(function(c, d) { return c + d.size }, 0)
+			}
+			if (sorting() == 'Total (ascending)') {
+				return b.values.reduce(function(c, d) { return c + d.size }, 0) - a.values.reduce(function(c, d) { return c + d.size }, 0);
+			}
+			if (sorting() == 'Name') {
+				return d3.ascending(a.key, b.key);
+			}
+		}
 
-    chart.draw(function (selection, data){
+		data.sort(sortBy);
 
-        var w = +width(),
-            h = (+height() - (+padding()*(data.length-1))) / (data.length);
+		var curves = {
+			'Basis spline': d3.curveBasis,
+			'Cardinal': d3.curveCardinal,
+			'DensityDesign': curveSankey,
+			'Linear': d3.curveLinear
+		}
 
-        var svg = selection
-            .attr("width", +width())
-            .attr("height", +height())
+		var w = +width(),
+			h = (+height() - 20 - (+padding() * (data.length - 1))) / data.length;
 
-        var x = d3.time.scale()
-            .range([0, w]);
+		var svg = selection
+			.attr("width", +width())
+			.attr("height", +height())
 
-        var y = d3.scale.linear()
-            .range([h, 0]);
+		var x = d3.scaleTime()
+			.range([0, w]);
 
-        var area = d3.svg.area()
-            .x(function(d) { return x(d.date); })
-            .y0(h)
-            .y1(function(d) { return y(d.size); });
+		var y = d3.scaleLinear()
+			.range([h, 0]);
 
-        var line = d3.svg.line()
-            .x(function(d) { return x(d.date); })
-            .y(function(d) { return y(d.size); });
+		var area = d3.area()
+			.x(function(d) { return x(d.date); })
+			.curve(curves[curve()]);
 
-        x.domain([
-            d3.min(data, function(layer) { return d3.min(layer, function(d) { return d.date; }); }),
-            d3.max(data, function(layer) { return d3.max(layer, function(d) { return d.date; }); })
-        ])
+		if (specular()) {
+			area.y0(function(d) { return h - y(d.size) / 2; })
+				.y1(function(d) { return y(d.size) / 2; })
+		} else {
+			area.y0(h) //align to baseline
+				.y1(function(d) { return y(d.size); })
+		}
 
-        colors.domain(data, function (d){ return d[0].group; })
+		x.domain([
+			d3.min(data, function(layer) { return d3.min(layer.values, function(d) { return d.date; }); }),
+			d3.max(data, function(layer) { return d3.max(layer.values, function(d) { return d.date; }); })
+		])
 
-        svg.selectAll("g")
-            .data(data)
-            .enter().append("g")
-            .attr("title", function(d) { return d[0].group; })
-            .attr("transform", function(d,i) { return "translate(0," + ((h+padding())*i) + ")"})
-            .each(multiple);
+		colors.domain(data, function(d) { return d.values[0].color; }) //get color of first item
 
-        svg.selectAll("g")
-            .append("text")
-            .attr("x", w - 6)
-            .attr("y", h - 6)
-            .style("font-size","10px")
-            .style("fill", function(d){ return raw.foreground(colors()(d[0].group)) })
-            .style("font-family","Arial, Helvetica")
-            .style("text-anchor", "end")
-            .text(function(d) { return d[0].group; });
+		var xAxis = d3.axisBottom(x).tickSize(-height() + 15);
 
-        function multiple(single) {
+		svg.append("g")
+			.attr("class", "x axis")
+			.style("stroke-width", "1px")
+			.style("font-size", "10px")
+			.style("font-family", "Arial, Helvetica")
+			.attr("transform", "translate(" + 0 + "," + (height() - 15) + ")")
+			.call(xAxis);
 
-            var g = d3.select(this);
+		d3.selectAll(".x.axis line, .x.axis path")
+			.style("shape-rendering", "crispEdges")
+			.style("fill", "none")
+			.style("stroke", "#ccc")
 
-            if (scale()) y.domain([0, d3.max(data, function(layer) { return d3.max(layer, function(d) { return d.size; }); })])
-            else y.domain([0, d3.max(single, function(d) { return d.size; })]);
 
-            g.append("path")
-              .attr("class", "area")
-              .style("fill", function(d){ return colors()(d[0].group); })
-              .attr("d", area(single));
+		svg.selectAll("g.flow")
+			.data(data)
+			.enter().append("g")
+			.attr("class", "flow")
+			.attr("title", function(d) { return d.key; })
+			.attr("transform", function(d, i) { return "translate(0," + ((h + padding()) * i) + ")" })
+			.each(multiple);
 
-            /*g.append("path")
-              .attr("class", "line")
-              .style("fill","none")
-              .style("stroke","#666")
-              .style("stroke-width","1.5px")
-              .attr("d", line(single));*/
+		svg.selectAll("g.flow")
+			.append("text")
+			.attr("x", w - 6)
+			.attr("y", h - 6)
+			.style("font-size", "10px")
+			.style("fill", "black")
+			.style("font-family", "Arial, Helvetica")
+			.style("text-anchor", "end")
+			.text(function(d) { return d.key; });
 
-        }
+		function multiple(single) {
 
-    })
+			var g = d3.select(this);
+
+			if (scale()) {
+				y.domain([0, d3.max(data, function(layer) { return d3.max(layer.values, function(d) { return d.size; }); })])
+			} else {
+				y.domain([0, d3.max(single.values, function(d) { return d.size; })]);
+			}
+
+			g.append("path")
+				.attr("class", "area")
+				.style("fill", function(d) { return colors()(d.values[0].color); })
+				.attr("d", area(single.values));
+		}
+
+	})
 
 })();
